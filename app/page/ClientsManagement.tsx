@@ -1,8 +1,8 @@
 "use client";
 
-import { Button } from "./ui/button";
-import { Input } from "./ui/input";
-import { ScrollArea } from "./ui/scroll-area";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { ScrollArea } from "../components/ui/scroll-area";
 import { ArrowUp } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 

@@ -8,7 +8,6 @@ import {
 import { Message, MessageContent } from '@/components/ai-elements/message';
 import {
   PromptInput,
-  PromptInputButton,
   PromptInputModelSelect,
   PromptInputModelSelectContent,
   PromptInputModelSelectItem,
@@ -23,10 +22,16 @@ import {
   Action,
   Actions
 } from '@/components/ai-elements/actions';
+import {
+  Tool,
+  ToolHeader,
+  ToolContent,
+  ToolInput,
+  ToolOutput,
+} from '@/components/ai-elements/tool';
 import { Fragment, useState } from 'react';
-import { useChat } from '@ai-sdk/react';
 import { Response } from '@/components/ai-elements/response';
-import { CopyIcon, GlobeIcon, RefreshCcwIcon } from 'lucide-react';
+import { CopyIcon, RefreshCcwIcon } from 'lucide-react';
 import {
   Source,
   Sources,
@@ -39,6 +44,8 @@ import {
   ReasoningTrigger,
 } from '@/components/ai-elements/reasoning';
 import { Loader } from '@/components/ai-elements/loader';
+import { useResponseChat } from '../../hooks/useResponseChat';
+import { AuthorizationModal } from '../components/AuthorizationModal';
 
 const models = [
   {
@@ -50,9 +57,8 @@ const models = [
 const ChatBot = () => {
   const [input, setInput] = useState('');
   const [model, setModel] = useState<string>(models[0].value);
-  const [webSearch, setWebSearch] = useState(false);
-  const { messages, sendMessage, status } = useChat();
-
+  const [webSearch] = useState(false);
+  const { messages, sendMessage, status, pendingApproval, approveToolCall } = useResponseChat();
 
   const regenerate = () => {
     sendMessage(
@@ -89,6 +95,7 @@ const ChatBot = () => {
           <ConversationContent>
             {messages.map((message) => (
               <div key={message.id}>
+                {/* Sources */}
                 {message.role === 'assistant' && message.parts.filter((part) => part.type === 'source-url').length > 0 && (
                   <Sources>
                     <SourcesTrigger
@@ -109,53 +116,79 @@ const ChatBot = () => {
                     ))}
                   </Sources>
                 )}
-                {message.parts.map((part, i) => {
-                  switch (part.type) {
-                    case 'text':
-                      return (
-                        <Fragment key={`${message.id}-${i}`}>
-                          <Message from={message.role}>
-                            <MessageContent>
-                              <Response>
-                                {part.text}
-                              </Response>
-                            </MessageContent>
-                          </Message>
-                          {message.role === 'assistant' && i === messages.length - 1 && (
-                            <Actions className="mt-2">
-                              <Action
-                                onClick={() => regenerate()}
-                                label="Retry"
-                              >
-                                <RefreshCcwIcon className="size-3" />
-                              </Action>
-                              <Action
-                                onClick={() =>
-                                  navigator.clipboard.writeText(part.text)
-                                }
-                                label="Copy"
-                              >
-                                <CopyIcon className="size-3" />
-                              </Action>
-                            </Actions>
-                          )}
-                        </Fragment>
-                      );
-                    case 'reasoning':
-                      return (
-                        <Reasoning
-                          key={`${message.id}-${i}`}
-                          className="w-full"
-                          isStreaming={status === 'streaming' && i === message.parts.length - 1 && message.id === messages.at(-1)?.id}
+
+                {/* Reasoning */}
+                {message.parts.filter((part) => part.type === 'reasoning').map((part, i) => (
+                  <Reasoning
+                    key={`${message.id}-reasoning-${i}`}
+                    className="w-full"
+                    isStreaming={status === 'streaming' && message.id === messages.at(-1)?.id}
+                  >
+                    <ReasoningTrigger />
+                    <ReasoningContent>{part.text || ''}</ReasoningContent>
+                  </Reasoning>
+                ))}
+
+                {/* Tool Calls */}
+                {message.parts.filter((part) => part.type === 'tool-call').map((part) => (
+                  <Tool key={`${message.id}-tool-${part.id}`}>
+                    <ToolHeader
+                      type={(part.name || 'tool') as unknown as Parameters<typeof ToolHeader>[0]['type']}
+                      state={(part.state === 'streaming' ? 'input-streaming' : 
+                            part.state === 'completed' ? 'output-available' : 
+                            part.state === 'failed' ? 'output-error' : 'input-available') as unknown as Parameters<typeof ToolHeader>[0]['state']}
+                    />
+                    <ToolContent>
+                      {part.text && (
+                        <ToolInput input={(() => {
+                          try {
+                            return JSON.parse(part.text || '{}');
+                          } catch {
+                            return { arguments: part.text };
+                          }
+                        })()} />
+                      )}
+                      {message.parts.filter(p => p.type === 'tool-result' && p.id === part.id).map((resultPart) => (
+                        <ToolOutput
+                          key={`${part.id}-result`}
+                          output={resultPart.output}
+                          errorText={resultPart.output?.startsWith('Error:') ? resultPart.output : undefined}
+                        />
+                      ))}
+                    </ToolContent>
+                  </Tool>
+                ))}
+
+                {/* Text Content */}
+                {message.parts.filter((part) => part.type === 'text').map((part, i) => (
+                  <Fragment key={`${message.id}-text-${i}`}>
+                    <Message from={message.role}>
+                      <MessageContent>
+                        <Response>
+                          {part.text}
+                        </Response>
+                      </MessageContent>
+                    </Message>
+                    {message.role === 'assistant' && message.id === messages.at(-1)?.id && (
+                      <Actions className="mt-2">
+                        <Action
+                          onClick={() => regenerate()}
+                          label="Retry"
                         >
-                          <ReasoningTrigger />
-                          <ReasoningContent>{part.text}</ReasoningContent>
-                        </Reasoning>
-                      );
-                    default:
-                      return null;
-                  }
-                })}
+                          <RefreshCcwIcon className="size-3" />
+                        </Action>
+                        <Action
+                          onClick={() =>
+                            navigator.clipboard.writeText(part.text || '')
+                          }
+                          label="Copy"
+                        >
+                          <CopyIcon className="size-3" />
+                        </Action>
+                      </Actions>
+                    )}
+                  </Fragment>
+                ))}
               </div>
             ))}
             {status === 'submitted' && <Loader />}
@@ -195,10 +228,16 @@ const ChatBot = () => {
                 </PromptInputModelSelectContent>
               </PromptInputModelSelect>
             </PromptInputTools>
-            <PromptInputSubmit disabled={!input} status={status} />
+            <PromptInputSubmit disabled={!input} />
           </PromptInputToolbar>
         </PromptInput>
       </div>
+
+      <AuthorizationModal
+        request={pendingApproval}
+        onApprove={() => approveToolCall(true)}
+        onDeny={() => approveToolCall(false)}
+      />
     </div>
   );
 };

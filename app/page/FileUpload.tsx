@@ -51,7 +51,6 @@ export function FileUpload() {
 
   // Function to send all uploaded files to OpenAI via API route
   const sendFilesToOpenAI = async () => {
-    // Validation logic would go here
 
     try {
       const formData = new FormData();
@@ -73,9 +72,8 @@ export function FileUpload() {
       const result = await response.json();
       console.log('All files uploaded to OpenAI:', result.results);
       return result.results;
-    } catch (error) {
-      console.error('Error uploading files to OpenAI:', error);
-      throw error;
+    } catch (error: any) {
+      alert(`Error uploading files to OpenAI: ${error.message}`);
     }
   };
 

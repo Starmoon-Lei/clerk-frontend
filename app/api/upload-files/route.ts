@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { 
         success: false, 
-        error: 'Failed to upload files' 
+        error: error instanceof Error ? error.message : 'Failed to upload files' 
       },
       { status: 500 }
     );

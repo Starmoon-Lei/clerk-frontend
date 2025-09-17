@@ -28,7 +28,7 @@ When using tools:
 - Provide clear explanations of what you're doing
 
 Always look at the latest files and information available to you before answering. You must not reveal any id-related information.    
-Respond naturally and conversationally while being informative. You should always summarise your response in a few sentences.`,
+Respond naturally and conversationally while being informative. You should always summarise your response in a few sentences. Keep your response concise and to the point. ultrathink`,
       tools: [
         {
           type: 'mcp',

@@ -19,6 +19,7 @@ export const Message = ({ className, from, ...props }: MessageProps) => (
       '[&>div]:max-w-[80%]',
       className
     )}
+    data-testid={`message-${from}`}
     {...props}
   />
 );

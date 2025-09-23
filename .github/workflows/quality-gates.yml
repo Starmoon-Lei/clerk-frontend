@@ -1,0 +1,399 @@
+name: Quality Gates
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # Code coverage collection and reporting
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    
+    services:
+      dynamodb-local:
+        image: amazon/dynamodb-local:latest
+        ports:
+          - 8000:8000
+
+    env:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      DYNAMODB_ENDPOINT: http://localhost:8000
+      NEXTAUTH_SECRET: test-secret-for-ci
+      NEXTAUTH_URL: http://localhost:3000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'clerk/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ./clerk
+        run: npm ci
+
+      - name: Setup test database
+        working-directory: ./clerk
+        run: npm run setup-db
+
+      - name: Run all tests with coverage
+        working-directory: ./clerk
+        run: |
+          npm run test:coverage
+          npm run test:api
+          npm run test:integration
+          npm run test:database
+          npm run test:components
+          npm run test:accessibility
+
+      - name: Generate coverage report
+        working-directory: ./clerk
+        run: |
+          npx jest --coverage --coverageReporters=json-summary --coverageReporters=lcov --coverageReporters=text
+
+      - name: Coverage thresholds check
+        working-directory: ./clerk
+        run: |
+          node -e "
+          const fs = require('fs');
+          const coverage = JSON.parse(fs.readFileSync('coverage/coverage-summary.json', 'utf8'));
+          const thresholds = {
+            statements: 80,
+            branches: 75,
+            functions: 80,
+            lines: 80
+          };
+          
+          let failed = false;
+          const results = {};
+          
+          for (const [metric, threshold] of Object.entries(thresholds)) {
+            const actual = coverage.total[metric].pct;
+            results[metric] = { actual, threshold, passed: actual >= threshold };
+            if (actual < threshold) {
+              failed = true;
+              console.error(\`❌ \${metric}: \${actual}% (threshold: \${threshold}%)\`);
+            } else {
+              console.log(\`✅ \${metric}: \${actual}% (threshold: \${threshold}%)\`);
+            }
+          }
+          
+          // Write results for later steps
+          fs.writeFileSync('coverage-results.json', JSON.stringify(results, null, 2));
+          
+          if (failed) {
+            console.error('Coverage thresholds not met!');
+            process.exit(1);
+          } else {
+            console.log('All coverage thresholds met!');
+          }
+          "
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            clerk/coverage/
+            clerk/coverage-results.json
+          retention-days: 30
+
+      - name: Comment PR with coverage
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            try {
+              const coverageFile = path.join('clerk', 'coverage', 'coverage-summary.json');
+              const coverage = JSON.parse(fs.readFileSync(coverageFile, 'utf8'));
+              const resultsFile = path.join('clerk', 'coverage-results.json');
+              const results = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
+              
+              let comment = '## 📊 Code Coverage Report\n\n';
+              comment += '| Metric | Coverage | Threshold | Status |\n';
+              comment += '|--------|----------|-----------|--------|\n';
+              
+              for (const [metric, data] of Object.entries(results)) {
+                const emoji = data.passed ? '✅' : '❌';
+                comment += \`| \${metric.charAt(0).toUpperCase() + metric.slice(1)} | \${data.actual}% | \${data.threshold}% | \${emoji} |\n\`;
+              }
+              
+              comment += '\n📈 [View detailed coverage report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.error('Error reading coverage files:', error);
+            }
+
+  # Test performance monitoring
+  performance-monitoring:
+    name: Performance Monitoring
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'clerk/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ./clerk
+        run: npm ci
+
+      - name: Run performance tests with timing
+        working-directory: ./clerk
+        run: |
+          echo "Running performance tests..."
+          start_time=$(date +%s)
+          npm run test:performance
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
+          echo "Performance tests completed in ${duration} seconds"
+          echo "PERF_TEST_DURATION=${duration}" >> $GITHUB_ENV
+
+      - name: Run test performance monitoring
+        working-directory: ./clerk
+        run: npm run test:performance:monitor
+
+      - name: Check test performance thresholds
+        working-directory: ./clerk
+        run: |
+          node -e "
+          const fs = require('fs');
+          const maxDuration = 300; // 5 minutes max for performance tests
+          const actualDuration = parseInt(process.env.PERF_TEST_DURATION);
+          
+          console.log(\`Performance test duration: \${actualDuration}s (max: \${maxDuration}s)\`);
+          
+          if (actualDuration > maxDuration) {
+            console.error('❌ Performance tests took too long!');
+            process.exit(1);
+          } else {
+            console.log('✅ Performance tests completed within acceptable time');
+          }
+          "
+
+      - name: Upload performance monitoring results
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-monitoring
+          path: clerk/performance-results.json
+          retention-days: 30
+
+  # Accessibility and performance audit integration
+  audit-integration:
+    name: Accessibility & Performance Audits
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'clerk/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ./clerk
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: ./clerk
+        run: npx playwright install --with-deps chromium
+
+      - name: Build application
+        working-directory: ./clerk
+        run: npm run build
+
+      - name: Run accessibility audit
+        working-directory: ./clerk
+        run: |
+          npm run test:accessibility:e2e
+          echo "Accessibility audit completed"
+
+      - name: Run Lighthouse performance audit
+        working-directory: ./clerk
+        run: |
+          npm run test:performance:lighthouse
+          echo "Performance audit completed"
+
+      - name: Process audit results
+        working-directory: ./clerk
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+          
+          // Process Lighthouse results
+          const lhciDir = '.lighthouseci';
+          let performanceScore = 'N/A';
+          let accessibilityScore = 'N/A';
+          
+          try {
+            if (fs.existsSync(lhciDir)) {
+              const files = fs.readdirSync(lhciDir);
+              const manifestFile = files.find(f => f.includes('manifest.json'));
+              if (manifestFile) {
+                const manifest = JSON.parse(fs.readFileSync(path.join(lhciDir, manifestFile), 'utf8'));
+                if (manifest.length > 0) {
+                  const report = manifest[0];
+                  performanceScore = Math.round(report.summary.performance * 100);
+                  accessibilityScore = Math.round(report.summary.accessibility * 100);
+                }
+              }
+            }
+          } catch (error) {
+            console.warn('Could not process Lighthouse results:', error.message);
+          }
+          
+          const auditResults = {
+            performance: { score: performanceScore, threshold: 90 },
+            accessibility: { score: accessibilityScore, threshold: 95 }
+          };
+          
+          fs.writeFileSync('audit-results.json', JSON.stringify(auditResults, null, 2));
+          
+          console.log('Audit Results:');
+          console.log(\`Performance Score: \${performanceScore}\`);
+          console.log(\`Accessibility Score: \${accessibilityScore}\`);
+          "
+
+      - name: Upload audit results
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-results
+          path: |
+            clerk/.lighthouseci/
+            clerk/audit-results.json
+            clerk/test-results/
+          retention-days: 30
+
+      - name: Comment PR with audit results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const auditResults = JSON.parse(fs.readFileSync('clerk/audit-results.json', 'utf8'));
+              
+              let comment = '## 🔍 Quality Audit Results\n\n';
+              comment += '| Metric | Score | Threshold | Status |\n';
+              comment += '|--------|-------|-----------|--------|\n';
+              
+              for (const [metric, data] of Object.entries(auditResults)) {
+                const score = data.score === 'N/A' ? 'N/A' : \`\${data.score}%\`;
+                const passed = data.score === 'N/A' ? '⚠️' : (data.score >= data.threshold ? '✅' : '❌');
+                comment += \`| \${metric.charAt(0).toUpperCase() + metric.slice(1)} | \${score} | \${data.threshold}% | \${passed} |\n\`;
+              }
+              
+              comment += '\n🔗 [View detailed audit reports](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.error('Error reading audit results:', error);
+            }
+
+  # Quality gates enforcement
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    needs: [coverage-report, performance-monitoring, audit-integration]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all quality artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: quality-results
+
+      - name: Enforce quality gates
+        run: |
+          echo "# Quality Gates Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check job results
+          coverage_result="${{ needs.coverage-report.result }}"
+          performance_result="${{ needs.performance-monitoring.result }}"
+          audit_result="${{ needs.audit-integration.result }}"
+          
+          echo "## Quality Check Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Coverage Report: $coverage_result" >> $GITHUB_STEP_SUMMARY
+          echo "- Performance Monitoring: $performance_result" >> $GITHUB_STEP_SUMMARY
+          echo "- Accessibility & Performance Audits: $audit_result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Determine overall quality gate status
+          if [[ "$coverage_result" == "success" && "$performance_result" == "success" && "$audit_result" == "success" ]]; then
+            echo "✅ All quality gates passed!" >> $GITHUB_STEP_SUMMARY
+            echo "QUALITY_GATES_PASSED=true" >> $GITHUB_ENV
+          else
+            echo "❌ Quality gates failed!" >> $GITHUB_STEP_SUMMARY
+            echo "QUALITY_GATES_PASSED=false" >> $GITHUB_ENV
+            exit 1
+          fi
+
+      - name: Update commit status
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = process.env.QUALITY_GATES_PASSED === 'true' ? 'success' : 'failure';
+            const description = process.env.QUALITY_GATES_PASSED === 'true' 
+              ? 'All quality gates passed' 
+              : 'Quality gates failed - check workflow for details';
+            
+            github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: state,
+              target_url: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+              description: description,
+              context: 'Quality Gates'
+            });
+
+      - name: Alert on quality gate failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log('Quality gates failed - implement additional alerting as needed');
+            // Add integrations for Slack, email, or other notification systems

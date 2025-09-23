@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import { auth } from "../../../auth";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -7,12 +8,22 @@ const openai = new OpenAI({
 
 export async function POST(request: NextRequest) {
   try {
+    // Check authentication
+    const session = await auth();
+
+    if (!session?.user?.id) {
+      return NextResponse.json({
+        success: false,
+        error: 'Unauthorized. Please sign in to upload files.'
+      }, { status: 401 });
+    }
+
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
 
     validateFiles(files);
 
-    const result = await uploadToOpenAI(files);
+    const result = await uploadToOpenAI(files, session);
 
     return NextResponse.json({
       success: result
@@ -20,11 +31,11 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error('Error uploading files:', error);
-    
+
     return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to upload files' 
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to upload files'
       },
       { status: 500 }
     );
@@ -34,13 +45,17 @@ export async function POST(request: NextRequest) {
 /**
  * Upload files to OpenAI with single request
  */
-async function uploadToOpenAI(files: File[]) {
+async function uploadToOpenAI(files: File[], session: any) {
   const uploadPromises = files.map(async (file) => {
     const response = await openai.files.create({
       file: file,
       purpose: 'user_data',
+      expires_after: {
+        anchor: 'created_at',
+        seconds: 60 * 60 * 24 * 14, // 14 days in seconds
+      }
     });
-    
+
     // validate the file is uploaded
     if (!response || !response.id) {
       console.error('Failed to upload file to OpenAI');
@@ -56,7 +71,7 @@ async function uploadToOpenAI(files: File[]) {
   const results = await Promise.all(uploadPromises);
 
   const input = results.map(r => ({
-    type: "input_file" as const, 
+    type: "input_file" as const,
     file_id: r.openaiFile.id as string
   }));
 
@@ -66,13 +81,15 @@ async function uploadToOpenAI(files: File[]) {
       {
         role: "user",
         content: [
-          { type: "input_text", text: "12312" },
+          { type: "input_text", text: `Process these files for user ID: ${session.user.id}` },
           ...input,
         ]
       },
     ],
     instructions: `
 You are a helpful assistant that analyzes the files to extract the profile information and store it in the MCP server. You will also fetch the clients involved in each profile and update the clients summary based on the extracted information.
+
+The current user ID is: ${session.user.id}. All data operations should be scoped to this user for privacy and security.
 
 Your response MUST include a JSON array with the following schema:
 [
@@ -86,8 +103,8 @@ where "client" is the name or identifier of the client extracted from the file, 
         type: "mcp",
         server_label: "mcp",
         server_description: "A mcp server to assist with document analysis.",
-        server_url: "https://mcp-server-jet.vercel.app/mcp",
-        require_approval: "never",
+        server_url: `https://mcp-server-jet.vercel.app/mcp?userId=${encodeURIComponent(session.user.id)}`,
+        require_approval: "never"
       },
     ],
   });
@@ -106,7 +123,7 @@ where "client" is the name or identifier of the client extracted from the file, 
  * Validate files including file type, file size, file name
  */
 function validateFiles(files: File[]) {
-  
+
   files.forEach(file => {
     if (file.type !== 'application/pdf' && file.type !== 'image/jpeg' && file.type !== 'image/png' && file.type !== 'text/plain' && file.type !== 'docx' && file.type !== 'doc' && file.type !== 'txt') {
       throw new Error('File type is not allowed');

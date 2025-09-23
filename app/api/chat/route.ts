@@ -1,4 +1,6 @@
 import OpenAI from 'openai';
+import { auth } from "../../../auth";
+import { NextResponse } from "next/server";
 
 export const maxDuration = 30;
 
@@ -8,6 +10,15 @@ const openai = new OpenAI({
 
 export async function POST(req: Request) {
   try {
+    // Check authentication
+    const session = await auth();
+    
+    if (!session?.user?.id) {
+      return NextResponse.json({ 
+        error: 'Unauthorized. Please sign in to access this resource.' 
+      }, { status: 401 });
+    }
+
     const { messages, webSearch } = await req.json();
     console.log("messages", messages);
 
@@ -22,10 +33,13 @@ export async function POST(req: Request) {
       })),
       instructions: `You are a helpful assistant that can answer questions, help with tasks, and access various tools through MCP servers. 
 
+The current user ID is: ${session.user.id}. All data operations should be scoped to this user for privacy and security.
+
 When using tools:
 - Be thorough and explain your reasoning
 - Show your thinking process step by step
 - Provide clear explanations of what you're doing
+- Always ensure data operations are user-specific
 
 Always look at the latest files and information available to you before answering. You must not reveal any id-related information.    
 Respond naturally and conversationally while being informative. You should always summarise your response in a few sentences. Keep your response concise and to the point. ultrathink`,
@@ -36,6 +50,8 @@ Respond naturally and conversationally while being informative. You should alway
           server_description: 'A MCP server to assist with document analysis and client management.',
           server_url: 'https://mcp-server-jet.vercel.app/mcp',
           require_approval: webSearch ? 'always' : 'never',
+          // Pass user context to MCP server
+          context: { userId: session.user.id }
         },
       ],
     });

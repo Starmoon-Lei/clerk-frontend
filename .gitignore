@@ -10,9 +10,6 @@
 !.yarn/releases
 !.yarn/versions
 
-# testing
-/coverage
-
 # next.js
 /.next/
 /out/
@@ -43,3 +40,9 @@ next-env.d.ts
 # development scripts
 /scripts
 /requirements
+
+# test
+/test-results
+/playwright-report/
+/coverage
+/tests

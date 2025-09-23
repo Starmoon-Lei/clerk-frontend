@@ -1,0 +1,32 @@
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "CI/CD Pipeline / Unit & Component Tests",
+      "CI/CD Pipeline / Integration Tests", 
+      "CI/CD Pipeline / E2E Tests (chromium)",
+      "CI/CD Pipeline / E2E Tests (firefox)",
+      "CI/CD Pipeline / E2E Tests (webkit)",
+      "CI/CD Pipeline / Accessibility Tests",
+      "CI/CD Pipeline / Performance Tests",
+      "Quality Gates / Coverage Report",
+      "Quality Gates / Performance Monitoring",
+      "Quality Gates / Accessibility & Performance Audits",
+      "Quality Gates / Quality Gates"
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false,
+    "require_last_push_approval": false
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": true,
+  "lock_branch": false,
+  "allow_fork_syncing": true
+}

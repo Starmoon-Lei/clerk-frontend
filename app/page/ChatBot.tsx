@@ -58,7 +58,11 @@ const ChatBot = () => {
   const [input, setInput] = useState('');
   const [model, setModel] = useState<string>(models[0].value);
   const [webSearch] = useState(false);
-  const { messages, sendMessage, status, pendingApproval, approveToolCall } = useResponseChat();
+  const { messages, sendMessage, status, pendingApproval, approveToolCall } = useResponseChat({
+    onError: (error) => {
+      console.error('Chat error:', error);
+    }
+  });
 
   const regenerate = () => {
     sendMessage(
@@ -91,7 +95,7 @@ const ChatBot = () => {
   return (
     <div className="max-w-4xl mx-auto p-6 relative size-full h-screen">
       <div className="flex flex-col h-full">
-        <Conversation className="h-full">
+        <Conversation className="h-full" data-testid="conversation">
           <ConversationContent>
             {messages.map((message) => (
               <div key={message.id}>
@@ -191,15 +195,21 @@ const ChatBot = () => {
                 ))}
               </div>
             ))}
-            {status === 'submitted' && <Loader />}
+            {status === 'submitted' && <Loader data-testid="chat-loader" />}
+            {status === 'error' && (
+              <div className="p-4 bg-destructive/10 text-destructive rounded-md" data-testid="error-message">
+                An error occurred while processing your request. Please try again.
+              </div>
+            )}
           </ConversationContent>
           <ConversationScrollButton />
         </Conversation>
 
-        <PromptInput onSubmit={handleSubmit} className="mt-4">
+        <PromptInput onSubmit={handleSubmit} className="mt-4" data-testid="prompt-input">
           <PromptInputTextarea
             onChange={(e) => setInput(e.target.value)}
             value={input}
+            data-testid="chat-input"
           />
           <PromptInputToolbar>
             <PromptInputTools>
@@ -215,20 +225,21 @@ const ChatBot = () => {
                   setModel(value);
                 }}
                 value={model}
+                data-testid="model-select"
               >
                 <PromptInputModelSelectTrigger>
                   <PromptInputModelSelectValue />
                 </PromptInputModelSelectTrigger>
                 <PromptInputModelSelectContent>
                   {models.map((model) => (
-                    <PromptInputModelSelectItem key={model.value} value={model.value}>
+                    <PromptInputModelSelectItem key={model.value} value={model.value} data-testid="model-option">
                       {model.name}
                     </PromptInputModelSelectItem>
                   ))}
                 </PromptInputModelSelectContent>
               </PromptInputModelSelect>
             </PromptInputTools>
-            <PromptInputSubmit disabled={!input} />
+            <PromptInputSubmit disabled={!input} data-testid="chat-submit" />
           </PromptInputToolbar>
         </PromptInput>
       </div>

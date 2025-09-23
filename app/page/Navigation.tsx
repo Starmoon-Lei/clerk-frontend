@@ -1,5 +1,6 @@
 "use client";
 
+import { useSession, signOut } from "next-auth/react";
 import { Button } from "../components/ui/button";
 import { 
   DropdownMenu,
@@ -9,7 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu";
-import { Avatar, AvatarFallback } from "../components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { Upload, MessageCircle, Settings, LogOut, User, ChevronDown } from "lucide-react";
 
 interface NavigationProps {
@@ -18,6 +19,8 @@ interface NavigationProps {
 }
 
 export function Navigation({ activeTab, onTabChange }: NavigationProps) {
+  const { data: session, status } = useSession();
+  
   const navItems = [
     {
       id: 'upload',
@@ -31,8 +34,33 @@ export function Navigation({ activeTab, onTabChange }: NavigationProps) {
     }
   ];
 
+  const handleSignOut = () => {
+    signOut({ callbackUrl: '/auth/signin' });
+  };
+
+  const getUserInitials = (name: string) => {
+    return name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
+  if (status === "loading") {
+    return (
+      <div className="w-64 h-full bg-sidebar border-r border-sidebar-border flex items-center justify-center">
+        <div className="text-sidebar-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return null;
+  }
+
   return (
-    <div className="w-64 h-full bg-sidebar border-r border-sidebar-border flex flex-col">
+    <div className="w-64 h-full bg-sidebar border-r border-sidebar-border flex flex-col" data-testid="navigation">
       <div className="p-6 border-b border-sidebar-border">
         <h2 className="text-sidebar-foreground">Tool Dashboard</h2>
       </div>
@@ -68,11 +96,16 @@ export function Navigation({ activeTab, onTabChange }: NavigationProps) {
               className="w-full justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
             >
               <Avatar className="w-6 h-6 mr-3">
-                <AvatarFallback className="text-xs">JD</AvatarFallback>
+                {session.user?.image && (
+                  <AvatarImage src={session.user.image} alt={session.user.name || ''} />
+                )}
+                <AvatarFallback className="text-xs">
+                  {session.user?.name ? getUserInitials(session.user.name) : 'U'}
+                </AvatarFallback>
               </Avatar>
               <div className="flex-1 text-left">
-                <p className="text-sm">John Doe</p>
-                <p className="text-xs text-muted-foreground">john@example.com</p>
+                <p className="text-sm">{session.user?.name || 'User'}</p>
+                <p className="text-xs text-muted-foreground">{session.user?.email}</p>
               </div>
               <ChevronDown className="w-4 h-4 ml-2" />
             </Button>
@@ -80,8 +113,8 @@ export function Navigation({ activeTab, onTabChange }: NavigationProps) {
           <DropdownMenuContent className="w-56" align="end" forceMount>
             <DropdownMenuLabel className="font-normal">
               <div className="flex flex-col space-y-1">
-                <p className="text-sm">John Doe</p>
-                <p className="text-xs text-muted-foreground">john@example.com</p>
+                <p className="text-sm">{session.user?.name || 'User'}</p>
+                <p className="text-xs text-muted-foreground">{session.user?.email}</p>
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
@@ -94,7 +127,7 @@ export function Navigation({ activeTab, onTabChange }: NavigationProps) {
               <span>Settings</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>
+            <DropdownMenuItem onClick={handleSignOut} data-testid="signout-button">
               <LogOut className="mr-2 h-4 w-4" />
               <span>Log out</span>
             </DropdownMenuItem>

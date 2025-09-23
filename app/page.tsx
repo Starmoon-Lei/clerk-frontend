@@ -1,12 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import { useSession } from "next-auth/react";
 import { Navigation } from "./page/Navigation";
 import { FileUpload } from "./page/FileUpload";
 import "@radix-ui/themes/styles.css";
 import ChatBot from "./page/ChatBot";
+import { Button } from "./components/ui/button";
+import Link from "next/link";
 
 export default function App() {
+  const { data: session, status } = useSession();
   const [activeTab, setActiveTab] = useState('upload');
 
   const renderContent = () => {
@@ -19,6 +23,31 @@ export default function App() {
         return <FileUpload />;
     }
   };
+
+  if (status === "loading") {
+    return (
+      <div className="h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-gray-900 mx-auto"></div>
+          <p className="mt-4 text-lg">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="h-screen bg-background flex items-center justify-center">
+        <main className="text-center space-y-4" role="main">
+          <h1 className="text-4xl font-bold">Business Assistant - Clerk</h1>
+          <p className="text-lg text-gray-600">Please sign in to access your business documents and clients</p>
+          <Button asChild tabIndex={0}>
+            <Link href="/auth/signin">Sign In</Link>
+          </Button>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen bg-background flex">

@@ -108,6 +108,7 @@ export function FileUpload() {
         onDragLeave={handleDrag}
         onDragOver={handleDrag}
         onDrop={handleDrop}
+        data-testid="file-drop-zone"
       >
         <div className="text-center space-y-4">
           <div className="mx-auto w-12 h-12 bg-muted rounded-full flex items-center justify-center">
@@ -148,7 +149,7 @@ export function FileUpload() {
           </div>
           <div className="space-y-2">
             {uploadedFiles.map((file) => (
-              <div key={file.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+              <div key={file.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg" data-testid="uploaded-file">
                 <div className="flex items-center space-x-3">
                   <div className="w-8 h-8 bg-primary/10 rounded flex items-center justify-center">
                     <File className="w-4 h-4 text-primary" />
@@ -163,6 +164,7 @@ export function FileUpload() {
                   size="sm"
                   onClick={() => removeFile(file.id)}
                   className="h-8 w-8 p-0"
+                  data-testid="remove-file-button"
                 >
                   <X className="w-4 h-4" />
                 </Button>

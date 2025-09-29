@@ -1,5 +1,6 @@
 "use client"
 
+import { Suspense } from "react"
 import { useSearchParams } from "next/navigation"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -13,7 +14,7 @@ const errorMessages = {
   Default: "An error occurred during authentication."
 }
 
-export default function AuthErrorPage() {
+function AuthErrorContent() {
   const searchParams = useSearchParams()
   const error = searchParams.get('error') as keyof typeof errorMessages
 
@@ -38,7 +39,7 @@ export default function AuthErrorPage() {
                 Try Again
               </Link>
             </Button>
-            
+
             <Button asChild variant="outline" className="w-full">
               <Link href="/">
                 <ArrowLeft className="mr-2 h-4 w-4" />
@@ -46,7 +47,7 @@ export default function AuthErrorPage() {
               </Link>
             </Button>
           </div>
-          
+
           {error && (
             <div className="text-xs text-center text-gray-500 mt-4">
               Error code: {error}
@@ -55,5 +56,17 @@ export default function AuthErrorPage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+export default function AuthErrorPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">Loading...</div>
+      </div>
+    }>
+      <AuthErrorContent />
+    </Suspense>
   )
 }

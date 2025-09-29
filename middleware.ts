@@ -2,7 +2,6 @@ import { auth } from "@/auth"
 import { NextResponse } from "next/server"
 
 export default auth((req) => {
-  const isLoggedIn = !!req.auth
   const { pathname } = req.nextUrl
 
   // Define truly public routes
@@ -18,25 +17,36 @@ export default auth((req) => {
     return NextResponse.next()
   }
 
+  // SECURITY FIX: Validate fresh session data, not just token existence
+  const session = req.auth
+  const isLoggedIn = !!session?.user?.id
+
+  // Additional session validation for protected routes
+  const isSessionValid = session && session.expires && new Date(session.expires) > new Date()
+
   // Redirect logged-in users away from auth pages
-  if (isLoggedIn && isAuthPage) {
+  if (isLoggedIn && isSessionValid && isAuthPage) {
     return NextResponse.redirect(new URL('/', req.url))
   }
 
   // Allow auth pages for unauthenticated users
-  if (!isLoggedIn && isAuthPage) {
+  if ((!isLoggedIn || !isSessionValid) && isAuthPage) {
     return NextResponse.next()
   }
 
-  // Protect API routes (except auth routes already handled above)
-  if (pathname.startsWith('/api') && !isLoggedIn) {
+  // Protect API routes with strict session validation
+  if (pathname.startsWith('/api') && (!isLoggedIn || !isSessionValid)) {
+    const errorReason = !isLoggedIn ? 'No valid session' : 'Session expired'
+    console.warn(`🔒 API access denied: ${errorReason} for ${pathname}`)
+
     return NextResponse.json({
-      error: 'Unauthorized. Please sign in to access this resource.'
+      error: 'Unauthorized. Please sign in to access this resource.',
+      reason: errorReason
     }, { status: 401 })
   }
 
-  // Protect all other routes (including "/")
-  if (!isLoggedIn) {
+  // Protect all other routes with strict session validation
+  if (!isLoggedIn || !isSessionValid) {
     const callbackUrl = encodeURIComponent(pathname)
     return NextResponse.redirect(
       new URL(`/auth/signin?callbackUrl=${callbackUrl}`, req.url)

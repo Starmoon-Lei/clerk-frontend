@@ -1,16 +1,27 @@
-import { NextRequest, NextResponse } from 'next/server';
-import OpenAI from 'openai';
-import { auth } from "../../../auth";
+/**
+ * Simplified File Upload & Processing Route - 10-Year Engineer Approach
+ * Philosophy: "For 100 docs/day, simple beats complex"
+ */
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+import { NextRequest, NextResponse } from 'next/server';
+import { auth } from "../../../auth";
+import { createSimpleProcessor } from "../../../lib/processing/actually-simple-processor";
+import { checkRateLimit, RATE_LIMITS, getRateLimitIdentifier } from "../../../lib/simple-rate-limit";
+import { validateSessionDuringOperation } from "../../../lib/session/session-refresh";
+import { processFilesWithLimits } from "../../../lib/processing/simple-concurrent";
+import { env } from "../../../lib/config/env";
+import { getApiTimeoutSeconds } from "../../../lib/config/timeouts";
+import { validateFilesSecurely } from "../../../lib/security/file-validator";
+
+export const maxDuration = getApiTimeoutSeconds('UPLOAD');
 
 export async function POST(request: NextRequest) {
-  try {
-    // Check authentication
-    const session = await auth();
+  const requestId = `upload_${Date.now()}`;
+  const startTime = Date.now();
 
+  try {
+    // 1. Authentication (keep this - essential)
+    const session = await auth();
     if (!session?.user?.id) {
       return NextResponse.json({
         success: false,
@@ -18,127 +29,143 @@ export async function POST(request: NextRequest) {
       }, { status: 401 });
     }
 
+    // Simple rate limiting
+    const identifier = getRateLimitIdentifier(request, session.user.id);
+    const rateLimit = checkRateLimit(identifier, RATE_LIMITS.UPLOAD.limit, RATE_LIMITS.UPLOAD.windowMs);
+
+    if (!rateLimit.allowed) {
+      console.warn(`Rate limit exceeded for ${identifier}`);
+      return NextResponse.json({
+        success: false,
+        error: `Rate limit exceeded. You can upload ${RATE_LIMITS.UPLOAD.limit} batches per minute. Please wait ${rateLimit.retryAfter} seconds.`,
+        retryAfter: rateLimit.retryAfter
+      }, { status: 429 });
+    }
+
+    // 2. Get files from form data
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
 
-    validateFiles(files);
+    console.log(`📁 Processing ${files.length} files for user ${session.user.id} (${requestId})`);
 
-    const result = await uploadToOpenAI(files, session);
+    // 3. Secure file validation (Fix 6: Path traversal prevention)
+    const validation = validateFilesSecurely(files);
+    if (!validation.isValid) {
+      const allErrors = validation.results
+        .filter(r => !r.isValid)
+        .flatMap(r => r.errors);
+
+      return NextResponse.json({
+        success: false,
+        error: 'File validation failed',
+        details: allErrors,
+        requestId
+      }, { status: 400 });
+    }
+
+    // Log security warnings if any
+    if (validation.summary.warnings > 0) {
+      console.warn(`⚠️ File validation warnings for ${requestId}:`, validation.summary);
+    }
+
+    // 4. Validate session before starting processing (Fix 6: Session refresh)
+    const { valid: sessionValid, session: refreshedSession } = await validateSessionDuringOperation(
+      session,
+      'file upload processing'
+    );
+
+    if (!sessionValid || !refreshedSession) {
+      return NextResponse.json({
+        success: false,
+        error: 'Session expired during processing. Please sign in again.',
+        requestId
+      }, { status: 401 });
+    }
+
+    // 5. Process files with actually simple processor
+    const processor = createSimpleProcessor();
+    const maxConcurrency = Math.min(env.maxConcurrentFiles, files.length); // Environment-based limit
+
+    const results = await processFilesWithLimits(
+      files,
+      async (file: File, index: number) => {
+        try {
+          // Validate session for every 3rd file in large batches to prevent session expiry
+          if (files.length > 3 && index > 0 && index % 3 === 0) {
+            const { valid } = await validateSessionDuringOperation(
+              refreshedSession,
+              `file processing (${index + 1}/${files.length})`
+            );
+
+            if (!valid) {
+              throw new Error('Session expired during batch processing');
+            }
+          }
+
+          // Direct processing - no job create/update dance
+          const result = await processor.processDocument(file);
+
+          // SECURITY FIX: Remove openaiFileId from client response to prevent file access leaks
+          return {
+            fileName: file.name,
+            fileSize: file.size,
+            success: result.success,
+            documentType: result.documentType,
+            confidence: result.confidence,
+            extractedData: result.extractedData,
+            processingTimeMs: result.processingTimeMs,
+            error: result.error
+            // openaiFileId intentionally removed for security
+          };
+        } catch (error) {
+          console.error(`❌ Failed to process ${file.name}:`, error);
+          return {
+            fileName: file.name,
+            fileSize: file.size,
+            success: false,
+            documentType: 'other',
+            confidence: 0,
+            extractedData: {},
+            processingTimeMs: 0, // Failed before timing could be measured
+            error: error instanceof Error ? error.message : 'Processing failed'
+            // openaiFileId intentionally omitted for security
+          };
+        }
+      },
+      maxConcurrency,
+      (completed, total) => {
+        // Progress callback for monitoring
+        console.log(`📊 Processing progress: ${completed}/${total} files completed`);
+      }
+    );
+
+    const totalTime = Date.now() - startTime;
+    const successful = results.filter(r => r.success).length;
+
+    console.log(`🎯 Batch complete: ${successful}/${results.length} successful in ${totalTime}ms`);
 
     return NextResponse.json({
-      success: result
+      success: true,
+      results,
+      summary: {
+        totalFiles: files.length,
+        successful,
+        failed: files.length - successful,
+        processingTimeMs: totalTime
+      },
+      requestId
     });
 
   } catch (error) {
-    console.error('Error uploading files:', error);
+    console.error(`❌ Upload request ${requestId} failed:`, error);
 
-    return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to upload files'
-      },
-      { status: 500 }
-    );
+    return NextResponse.json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Upload failed',
+      requestId
+    }, { status: 500 });
   }
 }
 
-/**
- * Upload files to OpenAI with single request
- */
-async function uploadToOpenAI(files: File[], session: any) {
-  const uploadPromises = files.map(async (file) => {
-    const response = await openai.files.create({
-      file: file,
-      purpose: 'user_data',
-      expires_after: {
-        anchor: 'created_at',
-        seconds: 60 * 60 * 24 * 14, // 14 days in seconds
-      }
-    });
-
-    // validate the file is uploaded
-    if (!response || !response.id) {
-      console.error('Failed to upload file to OpenAI');
-      throw new Error('Failed to upload file to OpenAI');
-    }
-
-    return {
-      originalFileName: file.name,
-      openaiFile: response
-    };
-  });
-
-  const results = await Promise.all(uploadPromises);
-
-  const input = results.map(r => ({
-    type: "input_file" as const,
-    file_id: r.openaiFile.id as string
-  }));
-
-  const chatResponse = await openai.responses.create({
-    model: process.env.OPENAI_MODEL as string,
-    input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: `Process these files for user ID: ${session.user.id}` },
-          ...input,
-        ]
-      },
-    ],
-    instructions: `
-You are a helpful assistant that analyzes the files to extract the profile information and store it in the MCP server. You will also fetch the clients involved in each profile and update the clients summary based on the extracted information.
-
-The current user ID is: ${session.user.id}. All data operations should be scoped to this user for privacy and security.
-
-Your response MUST include a JSON array with the following schema:
-[
-  { "client": "A", "file_id": "1", "summaryUpdated": true },
-  { "client": "B", "file_id": "2", "summaryUpdated": true }
-]
-where "client" is the name or identifier of the client extracted from the file, and "file_id" is the OpenAI file id associated with that client. Return this array as part of your response.
-    `.trim(),
-    tools: [
-      {
-        type: "mcp",
-        server_label: "mcp",
-        server_description: "A mcp server to assist with document analysis.",
-        server_url: `https://mcp-server-jet.vercel.app/mcp?userId=${encodeURIComponent(session.user.id)}`,
-        require_approval: "never"
-      },
-    ],
-  });
-
-  if (!chatResponse || !chatResponse.output) {
-    console.error('Failed to get chat response from OpenAI');
-    throw new Error('Failed to get chat response from OpenAI');
-  }
-
-  console.log("chatResponse.output", chatResponse.output);
-
-  return true;
-}
-
-/**
- * Validate files including file type, file size, file name
- */
-function validateFiles(files: File[]) {
-
-  files.forEach(file => {
-    if (file.type !== 'application/pdf' && file.type !== 'image/jpeg' && file.type !== 'image/png' && file.type !== 'text/plain' && file.type !== 'docx' && file.type !== 'doc' && file.type !== 'txt') {
-      throw new Error('File type is not allowed');
-    }
-    if (file.size === 0) {
-      throw new Error('File is empty');
-    }
-    if (file.size > 10 * 1024 * 1024) {
-      throw new Error('File size is too large');
-    }
-    if (file.name.length > 255) {
-      throw new Error('File name is too long');
-    }
-    if (!/^[a-zA-Z0-9\s._-]+$/.test(file.name)) {
-      throw new Error('File name contains illegal characters');
-    }
-  });
-}
+// OLD validateFiles function removed - replaced with secure validateFilesSecurely
+// to prevent path traversal vulnerabilities (Fix 6)

@@ -1,42 +1,23 @@
 import { NextAuthConfig } from "next-auth"
 import { DynamoDBAdapter } from "@auth/dynamodb-adapter"
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb"
-import { DynamoDBDocument } from "@aws-sdk/lib-dynamodb"
 import Google from "next-auth/providers/google"
+import { getDynamoDBClient } from "./lib/db/connection-pool"
 
-function createDynamoClient() {
-  const required = ['AWS_REGION', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']
-  const missing = required.filter(key => !process.env[key])
-
-  if (missing.length > 0) {
-    throw new Error(`Missing required environment variables: ${missing.join(', ')}`)
-  }
-
-  try {
-    return DynamoDBDocument.from(new DynamoDBClient({
-      region: process.env.AWS_REGION,
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-      },
-    }))
-  } catch (error) {
-    console.error('Failed to initialize DynamoDB client:', error)
-    throw new Error('Database initialization failed')
-  }
-}
-
-const client = createDynamoClient()
-
-export default {
-  adapter: DynamoDBAdapter(client, {
+// Use lazy initialization to avoid creating client at module load
+async function createDynamoAdapter() {
+  const client = await getDynamoDBClient();
+  return DynamoDBAdapter(client, {
     tableName: "clerk-auth",
     partitionKey: "pk",
     sortKey: "sk",
     indexName: "GSI1",
     indexPartitionKey: "GSI1PK",
     indexSortKey: "GSI1SK",
-  }),
+  });
+}
+
+// NextAuth configuration with lazy adapter initialization
+const authConfig: NextAuthConfig = {
   providers: [
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID,
@@ -66,4 +47,49 @@ export default {
     strategy: "database", // Use database sessions with DynamoDB
     maxAge: 7 * 24 * 60 * 60, // 7 days
   }
-} satisfies NextAuthConfig
+};
+
+// Initialize adapter lazily to avoid connection at module load
+let cachedAdapter: any = null;
+let adapterInitPromise: Promise<any> | null = null;
+
+// Safe mutex implementation for adapter initialization
+async function getAdapter() {
+  // Fast path: if adapter is already cached, return it
+  if (cachedAdapter) {
+    return cachedAdapter;
+  }
+
+  // If initialization is already in progress, wait for it
+  if (adapterInitPromise) {
+    return await adapterInitPromise;
+  }
+
+  // Start initialization (atomic operation)
+  console.log('🔐 Initializing DynamoDB adapter...');
+  adapterInitPromise = createDynamoAdapter()
+    .then(adapter => {
+      cachedAdapter = adapter;
+      console.log('✅ DynamoDB adapter initialized successfully');
+      return adapter;
+    })
+    .catch(error => {
+      console.error('❌ Failed to initialize DynamoDB adapter:', error);
+      // Reset promise on error to allow retry
+      adapterInitPromise = null;
+      throw error;
+    });
+
+  return await adapterInitPromise;
+}
+
+// Override the adapter property with a getter that initializes lazily
+Object.defineProperty(authConfig, 'adapter', {
+  get: function() {
+    return getAdapter();
+  },
+  enumerable: true,
+  configurable: true
+});
+
+export default authConfig;

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { SessionProvider } from "next-auth/react";
+import { PageErrorBoundary } from "../components/ui/error-boundary";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -28,9 +29,11 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <SessionProvider>
-          {children}
-        </SessionProvider>
+        <PageErrorBoundary>
+          <SessionProvider>
+            {children}
+          </SessionProvider>
+        </PageErrorBoundary>
       </body>
     </html>
   );

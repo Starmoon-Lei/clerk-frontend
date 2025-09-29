@@ -8,6 +8,7 @@ import "@radix-ui/themes/styles.css";
 import ChatBot from "./page/ChatBot";
 import { Button } from "./components/ui/button";
 import Link from "next/link";
+import { SectionErrorBoundary, PageErrorBoundary } from "../components/ui/error-boundary";
 
 export default function App() {
   const { data: session, status } = useSession();
@@ -16,11 +17,23 @@ export default function App() {
   const renderContent = () => {
     switch (activeTab) {
       case 'upload':
-        return <FileUpload />;
+        return (
+          <SectionErrorBoundary>
+            <FileUpload />
+          </SectionErrorBoundary>
+        );
       case 'clients':
-        return <ChatBot />;
+        return (
+          <SectionErrorBoundary>
+            <ChatBot />
+          </SectionErrorBoundary>
+        );
       default:
-        return <FileUpload />;
+        return (
+          <SectionErrorBoundary>
+            <FileUpload />
+          </SectionErrorBoundary>
+        );
     }
   };
 
@@ -50,20 +63,24 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen bg-background flex">
-      <Navigation activeTab={activeTab} onTabChange={setActiveTab} />
-      
-      <main className="flex-1 overflow-auto">
-        {activeTab === 'upload' ? (
-          <div className="h-full flex items-center justify-center p-8">
-            {renderContent()}
-          </div>
-        ) : (
-          <div className="h-full">
-            {renderContent()}
-          </div>
-        )}
-      </main>
-    </div>
+    <PageErrorBoundary>
+      <div className="h-screen bg-background flex">
+        <SectionErrorBoundary>
+          <Navigation activeTab={activeTab} onTabChange={setActiveTab} />
+        </SectionErrorBoundary>
+
+        <main className="flex-1 overflow-auto">
+          {activeTab === 'upload' ? (
+            <div className="h-full flex items-center justify-center p-8">
+              {renderContent()}
+            </div>
+          ) : (
+            <div className="h-full">
+              {renderContent()}
+            </div>
+          )}
+        </main>
+      </div>
+    </PageErrorBoundary>
   );
 }

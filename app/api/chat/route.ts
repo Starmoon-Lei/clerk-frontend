@@ -1,123 +1,199 @@
-import OpenAI from 'openai';
 import { auth } from "../../../auth";
 import { NextResponse } from "next/server";
+import { createSimpleProcessor } from "../../../lib/processing/actually-simple-processor";
+import { handleApiRouteError } from "../../../lib/error/simple-error-handler";
+import { Session } from "next-auth";
+import { chatRequestSchema, toolApprovalSchema } from "../../../lib/validation/schemas";
+import { z } from 'zod';
+import { checkRateLimit, RATE_LIMITS, getRateLimitIdentifier } from "../../../lib/simple-rate-limit";
+import { getApiTimeoutSeconds } from "../../../lib/config/timeouts";
+import { validateSessionDuringOperation } from "../../../lib/session/session-refresh";
 
-export const maxDuration = 30;
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+export const maxDuration = getApiTimeoutSeconds('CHAT');
 
 export async function POST(req: Request) {
+  let session: Session | null = null;
+
   try {
     // Check authentication
-    const session = await auth();
-    
+    session = await auth();
+
     if (!session?.user?.id) {
-      return NextResponse.json({ 
-        error: 'Unauthorized. Please sign in to access this resource.' 
+      console.warn('Unauthorized chat request');
+      return NextResponse.json({
+        error: 'Unauthorized. Please sign in to access this resource.'
       }, { status: 401 });
     }
 
-    const { messages, webSearch } = await req.json();
-    console.log("messages", messages);
+    // Simple rate limiting for chat
+    const identifier = getRateLimitIdentifier(req, session.user.id);
+    const rateLimit = checkRateLimit(identifier, RATE_LIMITS.CHAT.limit, RATE_LIMITS.CHAT.windowMs);
 
-    const response = await openai.responses.create({
-      model: process.env.OPENAI_MODEL as string,
-      stream: true,
-      input: messages.map((msg: { role: string; content: string | unknown[] }) => ({
-        role: msg.role,
-        content: Array.isArray(msg.content) 
-          ? msg.content 
-          : String(msg.content || (msg as { text?: string }).text || '')
-      })),
-      instructions: `You are a helpful assistant that can answer questions, help with tasks, and access various tools through MCP servers. 
+    if (!rateLimit.allowed) {
+      console.warn(`Chat rate limit exceeded for ${identifier}`);
+      return NextResponse.json({
+        success: false,
+        error: `Rate limit exceeded. You can send ${RATE_LIMITS.CHAT.limit} messages per minute. Please wait ${rateLimit.retryAfter} seconds.`,
+        retryAfter: rateLimit.retryAfter
+      }, { status: 429 });
+    }
 
-The current user ID is: ${session.user.id}. All data operations should be scoped to this user for privacy and security.
+    // Fix 5: Validate input with Zod schemas
+    const body = await req.json();
 
-When using tools:
-- Be thorough and explain your reasoning
-- Show your thinking process step by step
-- Provide clear explanations of what you're doing
-- Always ensure data operations are user-specific
+    let messages, model, webSearch;
+    try {
+      const validated = chatRequestSchema.parse(body);
+      ({ messages, model, webSearch } = validated);
+      console.log("Validated messages:", messages);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.warn('Invalid chat request:', error.errors);
+        return NextResponse.json({
+          success: false,
+          error: 'Invalid request data',
+          details: error.errors
+        }, { status: 400 });
+      }
+      throw error; // Re-throw non-validation errors
+    }
 
-Always look at the latest files and information available to you before answering. You must not reveal any id-related information.    
-Respond naturally and conversationally while being informative. You should always summarise your response in a few sentences. Keep your response concise and to the point. ultrathink`,
-      tools: [
-        {
-          type: 'mcp',
-          server_label: 'mcp',
-          server_description: 'A MCP server to assist with document analysis and client management.',
-          server_url: 'https://mcp-server-jet.vercel.app/mcp',
-          require_approval: webSearch ? 'always' : 'never',
-          // Pass user context to MCP server
-          context: { userId: session.user.id }
-        },
-      ],
+    // Fix 5: Validate session before starting chat operation to prevent expired session usage
+    const { valid: sessionValid, session: refreshedSession } = await validateSessionDuringOperation(
+      session,
+      'chat message processing'
+    );
+
+    if (!sessionValid || !refreshedSession) {
+      return NextResponse.json({
+        success: false,
+        error: 'Session expired during chat processing. Please sign in again.'
+      }, { status: 401 });
+    }
+
+    // Additional safety check for user ID (critical for data isolation)
+    if (!refreshedSession.user?.id) {
+      console.error('🔒 Critical: Session exists but user ID is missing - data isolation breach risk');
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication error: User session is incomplete. Please sign in again.'
+      }, { status: 401 });
+    }
+
+    // Use actually simple processor with chat capability
+    const processor = createSimpleProcessor();
+
+    // Transform message format
+    const chatMessages = messages.map((msg: { role: string; content: string | unknown[] }) => ({
+      role: msg.role,
+      content: Array.isArray(msg.content)
+        ? msg.content.join(' ')
+        : String(msg.content || (msg as { text?: string }).text || '')
+    }));
+
+    const stream = await processor.streamChat(chatMessages, {
+      model: model || process.env.OPENAI_MODEL,
+      webSearch,
+      userId: refreshedSession.user.id // Safe: already validated above
     });
 
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of response) {
-            const data = JSON.stringify(chunk);
-            controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-          }
-        } catch (error) {
-          console.error('Stream error:', error);
-          const errorData = JSON.stringify({
-            type: 'error',
-            error: error instanceof Error ? error.message : 'Unknown error'
-          });
-          controller.enqueue(encoder.encode(`data: ${errorData}\n\n`));
-        } finally {
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
-        }
-      },
-    });
-
-    return new Response(stream, {
+    const response = new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
       },
     });
+
+    return response;
+
   } catch (error) {
-    console.error('API Error:', error);
-    return new Response(
-      JSON.stringify({ 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      }), 
-      { 
-        status: 500, 
-        headers: { 'Content-Type': 'application/json' } 
-      }
-    );
+    console.error('Chat API Error:', error);
+    return handleApiRouteError(error, '/api/chat', session?.user?.id, `chat_${Date.now()}`);
   }
 }
 
 export async function PUT(req: Request) {
+  let session: Session | null = null;
+
   try {
-    const { approved } = await req.json();
-    
-    // TODO: Implement tool approval once OpenAI SDK supports it
-    console.log('Tool approval request:', approved);
-    
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' }
+    // CRITICAL: Add authentication check (was missing)
+    session = await auth();
+
+    if (!session?.user?.id) {
+      console.warn('Unauthorized tool approval request');
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Unauthorized. Please sign in to access this resource.'
+        }),
+        {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+    }
+
+    // Validate input with Zod schemas
+    const body = await req.json();
+
+    let approved, responseId, toolCallId;
+    try {
+      const validated = toolApprovalSchema.parse(body);
+      ({ approved, responseId, toolCallId } = validated);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.warn('Invalid tool approval request:', error.errors);
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'Invalid tool approval data',
+            details: error.errors
+          }),
+          {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        );
+      }
+      throw error;
+    }
+
+    // HONEST IMPLEMENTATION: Tool approval feature not yet available
+    console.log(`🔧 Tool approval request from user ${session.user.id}:`, {
+      approved,
+      responseId,
+      toolCallId,
+      timestamp: new Date().toISOString()
     });
+
+    // Return proper not-implemented response instead of fake success
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: 'Tool approval feature not yet implemented',
+        message: 'This feature is planned but not currently available. Your request has been logged.',
+        requestId: `approval_${Date.now()}`,
+        details: {
+          approved,
+          responseId,
+          toolCallId
+        }
+      }),
+      {
+        status: 501, // Not Implemented
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
   } catch (error) {
     console.error('Tool approval error:', error);
     return new Response(
-      JSON.stringify({ 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      }), 
-      { 
-        status: 500, 
-        headers: { 'Content-Type': 'application/json' } 
+      JSON.stringify({
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }),
+      {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
       }
     );
   }

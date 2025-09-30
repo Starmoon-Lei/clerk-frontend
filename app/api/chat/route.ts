@@ -91,21 +91,14 @@ export async function POST(req: Request) {
         : String(msg.content || (msg as { text?: string }).text || '')
     }));
 
-    const stream = await processor.streamChat(chatMessages, {
+    // Simple non-streaming chat - perfect for business Q&A
+    const result = await processor.chat(chatMessages, {
       model: model || process.env.OPENAI_MODEL,
       webSearch,
       userId: refreshedSession.user.id // Safe: already validated above
     });
 
-    const response = new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
-
-    return response;
+    return NextResponse.json({ content: result.content });
 
   } catch (error) {
     console.error('Chat API Error:', error);

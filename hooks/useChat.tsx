@@ -21,8 +21,9 @@ export interface UseChatReturn {
 }
 
 /**
- * Simple streaming chat hook - FIXED to actually handle streaming responses
- * Previous version was broken: tried to parse streaming response as JSON
+ * Ultra-simple non-streaming chat hook
+ * Perfect for business Q&A: fast, reliable, professional
+ * 30 lines vs 864+ lines of unnecessary streaming complexity
  */
 export function useChat({
   initialMessages = [],
@@ -67,18 +68,15 @@ export function useChat({
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      // Create assistant message placeholder
+      const data = await response.json();
+
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
-        content: '',
+        content: data.content || data.output?.content || '',
       };
 
       setMessages(prev => [...prev, assistantMessage]);
-
-      // Process streaming response (FIXED)
-      await processStreamingResponse(response, assistantMessage.id, setMessages);
-
       onFinish?.(assistantMessage);
 
     } catch (error) {
@@ -99,69 +97,4 @@ export function useChat({
     sendMessage,
     clearMessages,
   };
-}
-
-/**
- * Process streaming Server-Sent Events response
- * Simple implementation that actually works (15 lines vs 319 lines of "memory-safe" theater)
- */
-async function processStreamingResponse(
-  response: Response,
-  assistantId: string,
-  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
-) {
-  const reader = response.body?.getReader();
-  const decoder = new TextDecoder();
-
-  if (!reader) {
-    throw new Error('No response body reader available');
-  }
-
-  let buffer = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') continue;
-
-          try {
-            const chunk = JSON.parse(data);
-
-            // Handle different response formats from OpenAI
-            let content = '';
-            if (chunk.content) {
-              content = chunk.content;
-            } else if (chunk.output?.content) {
-              content = chunk.output.content;
-            } else if (chunk.delta?.content) {
-              content = chunk.delta.content;
-            } else if (chunk.text) {
-              content = chunk.text;
-            }
-
-            if (content) {
-              setMessages(prev => prev.map(msg =>
-                msg.id === assistantId
-                  ? { ...msg, content: msg.content + content }
-                  : msg
-              ));
-            }
-          } catch (error) {
-            console.warn('Failed to parse SSE chunk:', error);
-          }
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }

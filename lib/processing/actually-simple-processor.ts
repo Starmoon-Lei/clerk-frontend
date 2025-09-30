@@ -102,40 +102,30 @@ export class ActuallySimpleDocumentProcessor {
   }
 
   /**
-   * Stream chat for compatibility with existing chat interface
+   * Simple non-streaming chat - perfect for business Q&A
+   * No streaming complexity, just request → response
    */
-  async streamChat(
+  async chat(
     messages: Array<{ role: string; content: string }>,
     options: { model?: string; webSearch?: boolean; userId?: string } = {}
-  ): Promise<ReadableStream> {
+  ): Promise<{ content: string }> {
     const response = await this.openai.responses.create({
       model: options.model || 'gpt-4-turbo-preview',
       input: messages.map(msg => `${msg.role}: ${msg.content}`).join('\n'),
-      stream: true
+      stream: false  // Simple non-streaming!
     });
 
-    const encoder = new TextEncoder();
+    // Extract content from response
+    let content = '';
+    if (Array.isArray(response.output)) {
+      content = response.output.map(item =>
+        typeof item === 'string' ? item : (item as any)?.content || ''
+      ).join('');
+    } else {
+      content = (response.output as any)?.content || '';
+    }
 
-    return new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of response) {
-            const data = JSON.stringify(chunk);
-            controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-          }
-        } catch (error) {
-          console.error('Stream error:', error);
-          const errorData = JSON.stringify({
-            type: 'error',
-            error: error instanceof Error ? error.message : 'Stream failed'
-          });
-          controller.enqueue(encoder.encode(`data: ${errorData}\n\n`));
-        } finally {
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
-        }
-      }
-    });
+    return { content };
   }
 }
 

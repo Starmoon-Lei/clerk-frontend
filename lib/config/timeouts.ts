@@ -3,8 +3,6 @@
  * Prevents timeout mismatches between frontend and backend
  */
 
-import { env } from './env';
-
 // Base timeout configurations in milliseconds
 export const TIMEOUTS = {
   // API route timeouts (must match Next.js maxDuration)
@@ -25,7 +23,7 @@ export const TIMEOUTS = {
 
   // Processing timeouts
   PROCESSING: {
-    DOCUMENT: env.processingTimeoutMs, // From environment config
+    DOCUMENT: 300000, // 6 minutes per document
     FILE_UPLOAD: 240000, // 4 minutes per file
     AI_RESPONSE: 120000, // 2 minutes for AI responses
   },

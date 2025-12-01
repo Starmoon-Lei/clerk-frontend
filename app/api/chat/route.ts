@@ -1,13 +1,13 @@
 import { auth } from "../../../auth";
 import { NextResponse } from "next/server";
-import { createSimpleProcessor } from "../../../lib/processing/actually-simple-processor";
+import { businessChat } from "../../../lib/services/documentService";
 import { handleApiRouteError } from "../../../lib/error/simple-error-handler";
 import { Session } from "next-auth";
 import { chatRequestSchema, toolApprovalSchema } from "../../../lib/validation/schemas";
 import { z } from 'zod';
-import { checkRateLimit, RATE_LIMITS, getRateLimitIdentifier } from "../../../lib/simple-rate-limit";
+import { checkRateLimit, RATE_LIMITS, getRateLimitIdentifier } from "../../../lib/services/rateLimitService";
 import { getApiTimeoutSeconds } from "../../../lib/config/timeouts";
-import { validateSessionDuringOperation } from "../../../lib/session/session-refresh";
+import { validateSessionDuringOperation } from "../../../lib/services/sessionService";
 
 export const maxDuration = getApiTimeoutSeconds('CHAT');
 
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   let session: Session | null = null;
 
   try {
-    // Check authentication
+    /* ------ Authentication Validation ------ */
     session = await auth();
 
     if (!session?.user?.id) {
@@ -24,8 +24,32 @@ export async function POST(req: Request) {
         error: 'Unauthorized. Please sign in to access this resource.'
       }, { status: 401 });
     }
+    /* ------ Authentication Validation ------ */
 
-    // Simple rate limiting for chat
+    /* --------- Session Validation ---------- */
+    const { valid: sessionValid, session: refreshedSession } = await validateSessionDuringOperation(
+      session,
+      'chat message processing'
+    );
+
+    if (!sessionValid || !refreshedSession) {
+      return NextResponse.json({
+        success: false,
+        error: 'Session expired. Please sign in again.'
+      }, { status: 401 });
+    }
+
+    // Additional safety check for user ID
+    if (!refreshedSession.user?.id) {
+      console.error('🔒 Critical: Session exists but user ID is missing - data isolation breach risk');
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication error: User session is incomplete. Please sign in again.'
+      }, { status: 401 });
+    }
+    /* --------- Session Validation ---------- */
+
+    /* ------------ Rate Limiting ------------ */
     const identifier = getRateLimitIdentifier(req, session.user.id);
     const rateLimit = checkRateLimit(identifier, RATE_LIMITS.CHAT.limit, RATE_LIMITS.CHAT.windowMs);
 
@@ -37,14 +61,15 @@ export async function POST(req: Request) {
         retryAfter: rateLimit.retryAfter
       }, { status: 429 });
     }
+    /* ------------ Rate Limiting ------------ */
 
-    // Fix 5: Validate input with Zod schemas
+    /* ---------- Input Validation ----------- */
     const body = await req.json();
 
-    let messages, model, webSearch;
+    let messages;
     try {
       const validated = chatRequestSchema.parse(body);
-      ({ messages, model, webSearch } = validated);
+      ({ messages } = validated);
       console.log("Validated messages:", messages);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -55,35 +80,11 @@ export async function POST(req: Request) {
           details: error.errors
         }, { status: 400 });
       }
-      throw error; // Re-throw non-validation errors
+      throw error;
     }
+    /* ---------- Input Validation ----------- */
 
-    // Fix 5: Validate session before starting chat operation to prevent expired session usage
-    const { valid: sessionValid, session: refreshedSession } = await validateSessionDuringOperation(
-      session,
-      'chat message processing'
-    );
-
-    if (!sessionValid || !refreshedSession) {
-      return NextResponse.json({
-        success: false,
-        error: 'Session expired during chat processing. Please sign in again.'
-      }, { status: 401 });
-    }
-
-    // Additional safety check for user ID (critical for data isolation)
-    if (!refreshedSession.user?.id) {
-      console.error('🔒 Critical: Session exists but user ID is missing - data isolation breach risk');
-      return NextResponse.json({
-        success: false,
-        error: 'Authentication error: User session is incomplete. Please sign in again.'
-      }, { status: 401 });
-    }
-
-    // Use actually simple processor with chat capability
-    const processor = createSimpleProcessor();
-
-    // Transform message format
+    /* ------------ Message Handle ----------- */
     const chatMessages = messages.map((msg: { role: string; content: string | unknown[] }) => ({
       role: msg.role,
       content: Array.isArray(msg.content)
@@ -91,12 +92,8 @@ export async function POST(req: Request) {
         : String(msg.content || (msg as { text?: string }).text || '')
     }));
 
-    // Simple non-streaming chat - perfect for business Q&A
-    const result = await processor.chat(chatMessages, {
-      model: model || process.env.OPENAI_MODEL,
-      webSearch,
-      userId: refreshedSession.user.id // Safe: already validated above
-    });
+    const result = await businessChat(chatMessages);
+    /* ------------ Message Handle ----------- */
 
     return NextResponse.json({ content: result.content });
 
@@ -106,88 +103,87 @@ export async function POST(req: Request) {
   }
 }
 
-export async function PUT(req: Request) {
-  let session: Session | null = null;
+// export async function PUT(req: Request) {
+//   let session: Session | null = null;
 
-  try {
-    // CRITICAL: Add authentication check (was missing)
-    session = await auth();
+//   try {
+//     session = await auth();
 
-    if (!session?.user?.id) {
-      console.warn('Unauthorized tool approval request');
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'Unauthorized. Please sign in to access this resource.'
-        }),
-        {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
-    }
+//     if (!session?.user?.id) {
+//       console.warn('Unauthorized tool approval request');
+//       return new Response(
+//         JSON.stringify({
+//           success: false,
+//           error: 'Unauthorized. Please sign in to access this resource.'
+//         }),
+//         {
+//           status: 401,
+//           headers: { 'Content-Type': 'application/json' }
+//         }
+//       );
+//     }
 
-    // Validate input with Zod schemas
-    const body = await req.json();
+//     // Validate input with Zod schemas
+//     const body = await req.json();
 
-    let approved, responseId, toolCallId;
-    try {
-      const validated = toolApprovalSchema.parse(body);
-      ({ approved, responseId, toolCallId } = validated);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        console.warn('Invalid tool approval request:', error.errors);
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'Invalid tool approval data',
-            details: error.errors
-          }),
-          {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' }
-          }
-        );
-      }
-      throw error;
-    }
+//     let approved, responseId, toolCallId;
+//     try {
+//       const validated = toolApprovalSchema.parse(body);
+//       ({ approved, responseId, toolCallId } = validated);
+//     } catch (error) {
+//       if (error instanceof z.ZodError) {
+//         console.warn('Invalid tool approval request:', error.errors);
+//         return new Response(
+//           JSON.stringify({
+//             success: false,
+//             error: 'Invalid tool approval data',
+//             details: error.errors
+//           }),
+//           {
+//             status: 400,
+//             headers: { 'Content-Type': 'application/json' }
+//           }
+//         );
+//       }
+//       throw error;
+//     }
 
-    // HONEST IMPLEMENTATION: Tool approval feature not yet available
-    console.log(`🔧 Tool approval request from user ${session.user.id}:`, {
-      approved,
-      responseId,
-      toolCallId,
-      timestamp: new Date().toISOString()
-    });
+//     // HONEST IMPLEMENTATION: Tool approval feature not yet available
+//     console.log(`🔧 Tool approval request from user ${session.user.id}:`, {
+//       approved,
+//       responseId,
+//       toolCallId,
+//       timestamp: new Date().toISOString()
+//     });
 
-    // Return proper not-implemented response instead of fake success
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: 'Tool approval feature not yet implemented',
-        message: 'This feature is planned but not currently available. Your request has been logged.',
-        requestId: `approval_${Date.now()}`,
-        details: {
-          approved,
-          responseId,
-          toolCallId
-        }
-      }),
-      {
-        status: 501, // Not Implemented
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-  } catch (error) {
-    console.error('Tool approval error:', error);
-    return new Response(
-      JSON.stringify({
-        error: error instanceof Error ? error.message : 'Unknown error'
-      }),
-      {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      }
-    );
-  }
-}
+//     // Return proper not-implemented response instead of fake success
+//     return new Response(
+//       JSON.stringify({
+//         success: false,
+//         error: 'Tool approval feature not yet implemented',
+//         message: 'This feature is planned but not currently available. Your request has been logged.',
+//         requestId: `approval_${Date.now()}`,
+//         details: {
+//           approved,
+//           responseId,
+//           toolCallId
+//         }
+//       }),
+//       {
+//         status: 501, // Not Implemented
+//         headers: { 'Content-Type': 'application/json' }
+//       }
+//     );
+//   } catch (error) {
+//     console.error('Tool approval error:', error);
+//     return new Response(
+//       JSON.stringify({
+//         error: error instanceof Error ? error.message : 'Unknown error'
+//       }),
+//       {
+//         status: 500,
+//         headers: { 'Content-Type': 'application/json' }
+//       }
+//     );
+//   }
+// }

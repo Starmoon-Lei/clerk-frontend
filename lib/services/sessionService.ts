@@ -13,7 +13,7 @@ interface CachedSession {
   isValid: boolean;
 }
 
-// Simple in-memory cache for sessions with TTL
+// Simple in-memory cache for sessions with 5 minutes TTL
 class SessionCache {
   private cache = new Map<string, CachedSession>();
   private readonly TTL = 5 * 60 * 1000; // 5 minutes TTL

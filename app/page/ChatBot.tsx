@@ -19,7 +19,6 @@ import {
   Actions
 } from '@/components/ai-elements/actions';
 import { useState } from 'react';
-import { Response } from '@/components/ai-elements/response';
 import { CopyIcon, RefreshCcwIcon } from 'lucide-react';
 import { Loader } from '@/components/ai-elements/loader';
 import { useChat } from '../../hooks/useChat';
@@ -64,9 +63,9 @@ const ChatBot = () => {
               <div key={message.id}>
                 <Message from={message.role}>
                   <MessageContent>
-                    <Response>
+                    <div className="prose prose-sm max-w-none">
                       {message.content}
-                    </Response>
+                    </div>
                   </MessageContent>
                 </Message>
                 {message.role === 'assistant' && message.id === messages.at(-1)?.id && (

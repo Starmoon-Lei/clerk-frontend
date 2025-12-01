@@ -1,9 +1,6 @@
 /**
  * Simple Job Service - 10-Year Engineer Approach
  *
- * REPLACES: consolidated-job-service.ts (474 lines, 8+ methods)
- * PROVIDES: Just the 2 methods actually used (create, update)
- *
  * Zero enterprise patterns. Zero over-engineering. Just database CRUD.
  */
 
@@ -106,6 +103,3 @@ export function getSimpleJobService(): SimpleJobService {
   }
   return jobService;
 }
-
-// Keep the old function name for compatibility
-export const getConsolidatedJobService = getSimpleJobService;

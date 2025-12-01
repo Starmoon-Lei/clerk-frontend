@@ -1,6 +1,5 @@
 /**
  * Simple In-Memory Rate Limiting
- * Does exactly what's needed: counts requests per user, no enterprise theater
  */
 
 interface RateLimit {

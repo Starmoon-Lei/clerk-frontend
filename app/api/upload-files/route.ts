@@ -5,13 +5,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from "../../../auth";
-import { createSimpleProcessor } from "../../../lib/processing/actually-simple-processor";
-import { checkRateLimit, RATE_LIMITS, getRateLimitIdentifier } from "../../../lib/simple-rate-limit";
-import { validateSessionDuringOperation } from "../../../lib/session/session-refresh";
-import { processFilesWithLimits } from "../../../lib/processing/simple-concurrent";
-import { env } from "../../../lib/config/env";
+import { processFiles } from "../../../lib/services/documentService";
+import { checkRateLimit, RATE_LIMITS, getRateLimitIdentifier } from "../../../lib/services/rateLimitService";
 import { getApiTimeoutSeconds } from "../../../lib/config/timeouts";
-import { validateFilesSecurely } from "../../../lib/security/file-validator";
+import { validateSessionDuringOperation } from "../../../lib/services/sessionService";
 
 export const maxDuration = getApiTimeoutSeconds('UPLOAD');
 
@@ -20,7 +17,7 @@ export async function POST(request: NextRequest) {
   const startTime = Date.now();
 
   try {
-    // 1. Authentication (keep this - essential)
+    /* ------ Authentication Validation ------ */
     const session = await auth();
     if (!session?.user?.id) {
       return NextResponse.json({
@@ -28,8 +25,32 @@ export async function POST(request: NextRequest) {
         error: 'Unauthorized. Please sign in to upload files.'
       }, { status: 401 });
     }
+    /* ------ Authentication Validation ------ */
 
-    // Simple rate limiting
+    /* --------- Session Validation ---------- */
+    const { valid: sessionValid, session: refreshedSession } = await validateSessionDuringOperation(
+      session,
+      'file upload processing'
+    );
+
+    if (!sessionValid || !refreshedSession) {
+      return NextResponse.json({
+        success: false,
+        error: 'Session expired. Please sign in again.'
+      }, { status: 401 });
+    }
+
+    // Additional safety check for user ID
+    if (!refreshedSession.user?.id) {
+      console.error('🔒 Critical: Session exists but user ID is missing - data isolation breach risk');
+      return NextResponse.json({
+        success: false,
+        error: 'Authentication error: User session is incomplete. Please sign in again.'
+      }, { status: 401 });
+    }
+    /* --------- Session Validation ---------- */
+
+    /* ------------ Rate Limiting ------------ */
     const identifier = getRateLimitIdentifier(request, session.user.id);
     const rateLimit = checkRateLimit(identifier, RATE_LIMITS.UPLOAD.limit, RATE_LIMITS.UPLOAD.windowMs);
 
@@ -41,108 +62,33 @@ export async function POST(request: NextRequest) {
         retryAfter: rateLimit.retryAfter
       }, { status: 429 });
     }
+    /* ------------ Rate Limiting ------------ */
 
-    // 2. Get files from form data
+    /* ---------- Input Validation ----------- */
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
 
     console.log(`📁 Processing ${files.length} files for user ${session.user.id} (${requestId})`);
 
-    // 3. Secure file validation (Fix 6: Path traversal prevention)
-    const validation = validateFilesSecurely(files);
-    if (!validation.isValid) {
-      const allErrors = validation.results
-        .filter(r => !r.isValid)
-        .flatMap(r => r.errors);
-
-      return NextResponse.json({
-        success: false,
-        error: 'File validation failed',
-        details: allErrors,
-        requestId
-      }, { status: 400 });
-    }
-
-    // Log security warnings if any
-    if (validation.summary.warnings > 0) {
-      console.warn(`⚠️ File validation warnings for ${requestId}:`, validation.summary);
-    }
-
-    // 4. Validate session before starting processing (Fix 6: Session refresh)
-    const { valid: sessionValid, session: refreshedSession } = await validateSessionDuringOperation(
-      session,
-      'file upload processing'
-    );
-
-    if (!sessionValid || !refreshedSession) {
-      return NextResponse.json({
-        success: false,
-        error: 'Session expired during processing. Please sign in again.',
-        requestId
-      }, { status: 401 });
-    }
-
-    // 5. Process files with actually simple processor
-    const processor = createSimpleProcessor();
-    const maxConcurrency = Math.min(env.maxConcurrentFiles, files.length); // Environment-based limit
-
-    const results = await processFilesWithLimits(
-      files,
-      async (file: File, index: number) => {
-        try {
-          // Validate session for every 3rd file in large batches to prevent session expiry
-          if (files.length > 3 && index > 0 && index % 3 === 0) {
-            const { valid } = await validateSessionDuringOperation(
-              refreshedSession,
-              `file processing (${index + 1}/${files.length})`
-            );
-
-            if (!valid) {
-              throw new Error('Session expired during batch processing');
-            }
-          }
-
-          // Direct processing - no job create/update dance
-          const result = await processor.processDocument(file);
-
-          // SECURITY FIX: Remove openaiFileId from client response to prevent file access leaks
-          return {
-            fileName: file.name,
-            fileSize: file.size,
-            success: result.success,
-            documentType: result.documentType,
-            confidence: result.confidence,
-            extractedData: result.extractedData,
-            processingTimeMs: result.processingTimeMs,
-            error: result.error
-            // openaiFileId intentionally removed for security
-          };
-        } catch (error) {
-          console.error(`❌ Failed to process ${file.name}:`, error);
-          return {
-            fileName: file.name,
-            fileSize: file.size,
-            success: false,
-            documentType: 'other',
-            confidence: 0,
-            extractedData: {},
-            processingTimeMs: 0, // Failed before timing could be measured
-            error: error instanceof Error ? error.message : 'Processing failed'
-            // openaiFileId intentionally omitted for security
-          };
-        }
-      },
-      maxConcurrency,
-      (completed, total) => {
-        // Progress callback for monitoring
-        console.log(`📊 Processing progress: ${completed}/${total} files completed`);
+    // 3. Basic file size check (no complex validation for business docs)
+    for (const file of files) {
+      if (file.size > 50 * 1024 * 1024) { // 50MB limit
+        return NextResponse.json({
+          success: false,
+          error: `File ${file.name} too large (${Math.round(file.size / 1024 / 1024)}MB > 50MB)`,
+          requestId
+        }, { status: 400 });
       }
-    );
+    }
+    /* ---------- Input Validation ----------- */
+
+    /* ----------- Type Processing ----------- */
+    const results = await processFiles(files);
 
     const totalTime = Date.now() - startTime;
     const successful = results.filter(r => r.success).length;
-
     console.log(`🎯 Batch complete: ${successful}/${results.length} successful in ${totalTime}ms`);
+    /* ----------- Type Processing ----------- */
 
     return NextResponse.json({
       success: true,
@@ -166,6 +112,3 @@ export async function POST(request: NextRequest) {
     }, { status: 500 });
   }
 }
-
-// OLD validateFiles function removed - replaced with secure validateFilesSecurely
-// to prevent path traversal vulnerabilities (Fix 6)

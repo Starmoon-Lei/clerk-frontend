@@ -1,13 +1,6 @@
 /**
  * Simple Error Handler - 10-Year Engineer Approach
  *
- * REPLACES 4 over-engineered systems with one that actually works:
- * ❌ openai-error-handler.ts (418 lines of complexity)
- * ❌ centralized-error-handler.ts (50+ error codes)
- * ❌ consolidated-error-service.ts (circuit breakers for a small app)
- * ❌ production-error-handler.ts (over-classified everything)
- *
- * ✅ Solves actual problems:
  * - Handle OpenAI API errors with user-friendly messages
  * - Simple retry logic for rate limits
  * - Basic logging for debugging
